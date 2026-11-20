@@ -501,6 +501,7 @@ function viewKunden() {
       </div>`).join('') : '<div class="empty">Noch kein Kunde angelegt.<br>Lege mit „+ Kunde“ den ersten an.</div>'}
     </div>
     <div class="foot">
+      <button class="small" data-act="kunde-import">Kunde aus Importdatei hinzufügen</button>
       <button class="small" data-act="export">Datensicherung exportieren</button>
       <button class="small" data-act="import">Sicherung importieren</button>
       <button class="small" data-act="pw-aendern">App-Passwort ändern</button>
@@ -833,6 +834,7 @@ app.addEventListener('click', e => {
     case 'export': return exportieren();
     case 'import': return document.getElementById('importFile').click();
     case 'pw-aendern': return passwortAendernForm();
+    case 'kunde-import': return document.getElementById('kundenImportFile').click();
   }
 });
 
@@ -881,6 +883,47 @@ document.getElementById('importFile').addEventListener('change', async e => {
     dateiEintraege(inhalt).forEach(x => delete x.driveId);
     db = migrieren(inhalt); speichern(); location.hash = '#/'; render();
   } catch (err) { alert('Die Sicherung konnte nicht vollständig eingelesen werden.'); }
+});
+
+/* ---------- Kunden aus einer Importdatei hinzufügen (ergänzt, ersetzt nichts) ---------- */
+const KUNDEN_IMPORT_FORMAT = 'dguv-v3-kunden-import';
+const text = (v, max = 500) => String(v ?? '').trim().slice(0, max);
+const isoDatum = v => /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+// Nur bekannte Felder übernehmen und überall neue IDs vergeben – so kann eine Datei auch zweimal eingelesen werden
+function importKunde(k) {
+  if (!text(k?.name) || !Array.isArray(k.gebaeude)) throw new Error('ungültig');
+  return {
+    id: uid(), name: text(k.name, 200), ort: text(k.ort, 200),
+    gebaeude: k.gebaeude.map(g => ({
+      id: uid(), name: text(g.name, 200) || 'Ohne Bezeichnung',
+      items: (Array.isArray(g.items) ? g.items : []).filter(it => KATS.some(kt => kt.id === it.typ)).map(it => ({
+        id: uid(), typ: it.typ, name: text(it.name, 200) || 'Ohne Bezeichnung', standort: text(it.standort, 200),
+        letztePruefung: isoDatum(it.letztePruefung),
+        intervall: String(Math.min(120, Math.max(1, parseInt(it.intervall, 10) || KATS.find(kt => kt.id === it.typ).intervall))),
+        bemerkung: text(it.bemerkung, 2000), maengel: [], dokumente: [],
+      })),
+    })),
+  };
+}
+document.getElementById('kundenImportFile').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f || !entsperrt()) return;
+  let neu;
+  try {
+    const d = JSON.parse(await f.text());
+    if (d?.format !== KUNDEN_IMPORT_FORMAT || !Array.isArray(d.kunden) || !d.kunden.length) throw new Error();
+    neu = d.kunden.map(importKunde);
+  } catch (err) { return alert('Die Datei ist keine gültige Importdatei für Kunden.'); }
+  for (const k of neu) {
+    const items = k.gebaeude.flatMap(g => g.items);
+    const zahlen = KATS.map(kt => `${items.filter(i => i.typ === kt.id).length} ${kt.name}`).join(', ');
+    const schonDa = db.kunden.some(x => x.name.trim().toLowerCase() === k.name.toLowerCase());
+    if (!confirm(`${schonDa ? `Achtung: Einen Kunden „${k.name}“ gibt es schon – er würde ein zweites Mal angelegt.\n\n` : ''}` +
+      `Kunde „${k.name}“ hinzufügen?\n\n${k.gebaeude.length} Gebäudeteile\n${zahlen}\n\nDeine übrigen Kunden bleiben unverändert.`)) continue;
+    db.kunden.push(k);
+    speichern();
+    location.hash = '#/k/' + k.id;
+  }
+  render();
 });
 
 /* ---------- Google Drive: verschlüsselte Daten und Dateien im Ordner "DGUV-V3 App" ---------- */
