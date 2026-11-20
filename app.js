@@ -1056,7 +1056,7 @@ function vorlagenForm() {
   const stand = art => { const v = vorlagenListe().find(x => x.art === art.id); return v ? `hinterlegt: ${esc(v.datei)} (${datum(v.datum)})` : 'noch keine Vorlage'; };
   formular('Prüfprotokolle: Vorlagen & Prüfer',
     PROTOKOLL_ARTEN.map(art => `<label>Word-Vorlage ${esc(art.name)} – <span class="sub">${stand(art)}</span>
-      <input type="file" name="vorlage_${art.id}" accept=".docx,${DOCX_TYP}"></label>`).join('') +
+      <input type="file" name="vorlage_${art.id}"></label>`).join('') +
     `<p class="sub">Nur nötig beim ersten Mal oder wenn sich das Formular ändert. Die Vorlagen werden verschlüsselt gespeichert
       und über Google Drive auf deine anderen Geräte übertragen.</p>` +
     feld('Prüfer (Vorgabe für neue Protokolle)', 'pruefer', e.pruefer, 'maxlength="40"') +
@@ -1070,7 +1070,7 @@ function vorlagenForm() {
           const doc = zipLesen(await f.arrayBuffer()).find(z => z.name === 'word/document.xml');
           if (!doc) throw meldung('');
           xml = td.decode(await zipEntpacken(doc));
-        } catch (err) { throw meldung(`„${f.name}“ ist keine gültige Word-Datei (.docx).`); }
+        } catch (err) { throw meldung(`„${f.name}“ ist keine gültige Word-Datei (.docx). Falls Google Drive die Datei in ein Google-Dokument umgewandelt hat, bitte die originale .docx-Datei verwenden.`); }
         vorlagePruefen(xml, art);
         const id = uid();
         await dateiPut(id, new Blob([f], { type: DOCX_TYP }));
