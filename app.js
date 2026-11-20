@@ -270,6 +270,7 @@ const sperrzeitAbgelaufen = () => Date.now() - letzteAktivitaet > SPERRE_MINUTEN
 setInterval(() => { if (entsperrt() && sperrzeitAbgelaufen()) sperren(); }, 20000);
 
 function sperren() {
+  eingabenSichern();   // noch nicht gespeicherte Protokolleingaben vorher verschlüsselt ablegen
   dek = null; db = null; fotoZiel = null;
   clearTimeout(syncTimer);
   if (dlg.open) dlg.close();
@@ -320,7 +321,7 @@ async function passwortFestlegen(passwort) {
 /* ---------- Routing ---------- */
 const app = document.getElementById('app');
 const crumbs = document.getElementById('crumbs');
-window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { eingabenSichern(); render(); window.scrollTo(0, 0); });
 
 function render() {
   bildUrls.forEach(u => URL.revokeObjectURL(u)); bildUrls = [];
@@ -336,6 +337,8 @@ function render() {
   const kat = geb && p[4] ? KATS.find(k => k.id === p[4]) : null;
   const item = kat && p[5] ? geb.items.find(i => i.id === p[5]) : null;
   if (kat && p[5] && !item) { location.hash = `#/k/${kunde.id}/g/${geb.id}/${kat.id}`; return; }
+  const prot = item && p[6] === 'p' ? (item.protokolle || []).find(x => x.id === p[7]) : null;
+  if (item && p[6] === 'p' && !prot) { location.hash = `#/k/${kunde.id}/g/${geb.id}/${kat.id}/${item.id}`; return; }
   // Kategorie-Liste: über alle Kunden (#/liste/x) oder für einen Kunden (#/k/ID/liste/x)
   const listKat = p[0] === 'liste' ? KATS.find(k => k.id === p[1])
     : kunde && p[2] === 'liste' ? KATS.find(k => k.id === p[3]) : null;
@@ -348,11 +351,13 @@ function render() {
   if (kunde) c.push(`<a href="#/k/${kunde.id}">${esc(kunde.name)}</a>`);
   if (geb) c.push(`<a href="#/k/${kunde.id}/g/${geb.id}">${esc(geb.name)}</a>`);
   if (kat) c.push(`<a href="#/k/${kunde.id}/g/${geb.id}/${kat.id}">${kat.name}</a>`);
-  if (item) c.push(`<span>${esc(item.name)}</span>`);
+  if (item) c.push(prot ? `<a href="#/k/${kunde.id}/g/${geb.id}/${kat.id}/${item.id}">${esc(item.name)}</a>` : `<span>${esc(item.name)}</span>`);
+  if (prot) c.push('<span>Prüfprotokoll</span>');
   if (listKat) c.push(`<span>Alle ${listKat.name}</span>`);
   crumbs.innerHTML = c.join('<span>›</span>');
 
   if (listKat) viewListe(kunde, listKat);
+  else if (prot) viewProtokoll(kunde, geb, kat, item, prot);
   else if (item) viewItem(kunde, geb, kat, item);
   else if (kat) viewItems(kunde, geb, kat);
   else if (geb) viewGebaeude(kunde, geb);
@@ -501,6 +506,7 @@ function viewKunden() {
       </div>`).join('') : '<div class="empty">Noch kein Kunde angelegt.<br>Lege mit „+ Kunde“ den ersten an.</div>'}
     </div>
     <div class="foot">
+      <button class="small" data-act="vorlagen">Prüfprotokolle: Vorlagen &amp; Prüfer</button>
       <button class="small" data-act="kunde-import">Kunde aus Importdatei hinzufügen</button>
       <button class="small" data-act="export">Datensicherung exportieren</button>
       <button class="small" data-act="import">Sicherung importieren</button>
@@ -606,6 +612,21 @@ function viewItem(k, g, kt, it) {
         <div class="sub">${rest}</div></div>
     </div>
     ${it.bemerkung ? `<div class="card" style="margin-bottom:22px"><div class="label">Bemerkung</div>${esc(it.bemerkung)}</div>` : ''}
+    <div class="head"><h2 class="sec">Prüfprotokolle</h2><button class="primary" data-act="prot-neu">+ Prüfprotokoll</button></div>
+    <div class="list" style="margin-bottom:28px">${(it.protokolle || []).length ? [...it.protokolle].sort((a, b) => (b.datum || '').localeCompare(a.datum || '')).map(x => {
+      const art = protArt(x.art), n = x.zeilen.filter(z => !zeileLeer(art, z)).length;
+      return `<div class="row">
+        <a class="main" href="#/k/${k.id}/g/${g.id}/${kt.id}/${it.id}/p/${esc(x.id)}">
+          <div class="title">${esc(art.name)} vom ${datum(x.datum)}</div>
+          <div class="sub">${n} Messung${n === 1 ? '' : 'en'}${x.pruefer ? ' · Prüfer: ' + esc(x.pruefer) : ''}</div>
+        </a>
+        <div class="actions">
+          <button class="small" data-act="prot-word" data-id="${esc(x.id)}">Word-Datei</button>
+          <button class="small danger" data-act="prot-del" data-id="${esc(x.id)}">Löschen</button>
+        </div>
+      </div>`;
+    }).join('') : '<div class="empty">Noch kein Prüfprotokoll. Mit „+ Prüfprotokoll“ erfasst du die Messwerte direkt hier.</div>'}
+    </div>
     <div class="head"><h2 class="sec">Mängelliste</h2><button class="primary" data-act="mangel-neu">+ Mangel</button></div>
     <div class="list">${m.length ? m.map(x => `
       <div class="row ${x.behoben ? 'erledigt' : ''}">
@@ -758,6 +779,309 @@ document.getElementById('fotoFile').addEventListener('change', async e => {
   } catch (err) { alert('Foto konnte nicht gespeichert werden. Möglicherweise ist der Speicher des Browsers voll.'); }
 });
 
+/* ---------- Prüfprotokolle ----------
+ * Die Messwerte werden in der App erfasst (verschlüsselt wie alle Daten). Die Word-Datei entsteht erst auf Knopfdruck
+ * aus einer hinterlegten Vorlage (.docx mit Platzhaltern {{FIRMA1}}, {{DATUM}}, {{Z1}} …), die ebenfalls verschlüsselt
+ * in der App und in Google Drive liegt – Briefkopf und Formular landen so nie im öffentlichen App-Code.
+ */
+const DOCX_TYP = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const PROTOKOLL_ARTEN = [
+  { id: 'rcd', name: 'RCD-Prüfung', kurz: 'RCD', zeilenJeSeite: 16, spalten: [
+    { k: 'verteilung', l: 'Verteilung', breit: true, mitnehmen: true },
+    { k: 'typ', l: 'RCD-Typ', ph: 'z. B. A 40/0,03' },
+    { k: 'sicht', l: 'Sichtprüfung', io: true },
+    { k: 'taste', l: 'Prüftaste', io: true },
+    { k: 'zeit', l: 'Auslösezeit (ms)', zahl: true },
+    { k: 'strom', l: 'Auslösestrom (mA)', zahl: true },
+    { k: 'ui', l: 'UI < 50 V', ph: 'z. B. i.O.' },
+  ] },
+  { id: 'steckdose', name: 'Steckdosen-Prüfung', kurz: 'Steckdosen', zeilenJeSeite: 15, spalten: [
+    { k: 'ort', l: 'Ort / Stromkreis', breit: true, mitnehmen: true },
+    { k: 'schuko', l: 'Schuko', zahl: true },
+    { k: 'cee', l: 'CEE', zahl: true },
+    { k: 'schutz', l: 'Überstromschutzorgan', ph: 'z. B. B16' },
+    { k: 'zlpe', l: 'ZI L/PE (Ω)', zahl: true },
+    { k: 'ilpe', l: 'I L/PE (A)', zahl: true },
+    { k: 'zln', l: 'ZI L/N (Ω)', zahl: true },
+    { k: 'iln', l: 'I L/N (A)', zahl: true },
+  ] },
+];
+const protArt = id => PROTOKOLL_ARTEN.find(a => a.id === id) || PROTOKOLL_ARTEN[0];
+// Zellen in der Reihenfolge der Word-Tabelle; i.O./n.i.O. belegt zwei Spalten mit einem Kreuz
+const zellen = (art, z) => art.spalten.flatMap(s => s.io ? [z[s.k] === 'io' ? 'X' : '', z[s.k] === 'nio' ? 'X' : ''] : [z[s.k] || '']);
+const zellenAnzahl = art => zellen(art, {}).length;
+const zeileLeer = (art, z) => !art.spalten.some(s => String(z[s.k] || '').trim());
+const vorlagenListe = () => (db.protokollVorlagen ||= { dokumente: [] }).dokumente;
+const einstellungen = () => (db.einstellungen ||= {});
+
+// Eingaben im Protokoll werden ohne Neuaufbau der Seite übernommen und kurz danach gespeichert
+let eingabeTimer = null;
+function eingabenSichern() {
+  if (!eingabeTimer) return;
+  clearTimeout(eingabeTimer); eingabeTimer = null;
+  if (entsperrt()) speichern();
+}
+app.addEventListener('input', e => {
+  const el = e.target, prot = aktuellesProtokoll();
+  if (!prot || !entsperrt()) return;
+  if (el.dataset.pk) prot[el.dataset.pk] = el.value;
+  else if (el.dataset.z) { const z = prot.zeilen.find(x => x.id === el.dataset.z); if (z) z[el.dataset.k] = el.value; }
+  else return;
+  clearTimeout(eingabeTimer); eingabeTimer = setTimeout(eingabenSichern, 800);
+});
+app.addEventListener('change', e => { if (e.target.dataset.pk || e.target.dataset.z) eingabenSichern(); });
+function aktuellesProtokoll() {
+  const p = location.hash.replace(/^#\/?/, '').split('/');
+  if (p[6] !== 'p' || !db) return null;
+  const it = db.kunden.find(k => k.id === p[1])?.gebaeude.find(g => g.id === p[3])?.items.find(i => i.id === p[5]);
+  return it?.protokolle?.find(x => x.id === p[7]) || null;
+}
+
+function protokollAnlegen(k, g, kt, it, artId) {
+  const e = einstellungen(), art = protArt(artId);
+  const erste = { id: uid() };
+  if (art.spalten[0].mitnehmen) erste[art.spalten[0].k] = it.name;
+  const p = { id: uid(), art: art.id, datum: heute(), firma1: k.name, firma2: k.ort || '',
+    firma3: `${g.name} ${it.name}`.trim(), pruefer: e.pruefer || '', messgeraet: e.messgeraet || '',
+    seriennummer: e.seriennummer || '', zeilen: [erste], erstellt: Date.now() };
+  (it.protokolle ||= []).push(p);
+  speichern();
+  location.hash = `#/k/${k.id}/g/${g.id}/${kt.id}/${it.id}/p/${p.id}`;
+}
+
+function viewProtokoll(k, g, kt, it, p) {
+  const art = protArt(p.art), n = p.zeilen.filter(z => !zeileLeer(art, z)).length;
+  const seiten = Math.max(1, Math.ceil(n / art.zeilenJeSeite));
+  const kopf = (l, key, extra = '') => `<label>${l}<input data-pk="${key}" value="${esc(p[key])}" ${extra}></label>`;
+  const eingabe = (z, s) => s.io
+    ? `<label>${esc(s.l)}<select data-z="${esc(z.id)}" data-k="${s.k}">
+        ${[['', '–'], ['io', 'i.O.'], ['nio', 'n.i.O.']].map(([v, t]) => `<option value="${v}" ${z[s.k] === v || (!z[s.k] && !v) ? 'selected' : ''}>${t}</option>`).join('')}
+      </select></label>`
+    : `<label class="${s.breit ? 'breit' : ''}">${esc(s.l)}<input data-z="${esc(z.id)}" data-k="${s.k}" value="${esc(z[s.k])}"
+        ${s.zahl ? 'inputmode="decimal"' : ''} ${s.ph ? `placeholder="${esc(s.ph)}"` : ''} maxlength="60" autocomplete="off"></label>`;
+  app.innerHTML = `
+    <div class="head"><h1>📝 ${esc(art.name)}</h1>
+      <div class="actions">
+        <button class="primary" data-act="prot-word">Word-Datei erstellen</button>
+        <button data-act="prot-fertig">Fertig</button>
+      </div>
+      <p>${esc(k.name)} · ${esc(g.name)} · ${esc(it.name)} · Eingaben werden automatisch gespeichert</p></div>
+    <div class="card protkopf">
+      ${kopf('Firma (Zeile 1)', 'firma1', 'maxlength="45"')}
+      ${kopf('Firma (Zeile 2)', 'firma2', 'maxlength="45"')}
+      ${kopf('Anlage (Zeile 3)', 'firma3', 'maxlength="45"')}
+      ${kopf('Datum', 'datum', 'type="date"')}
+      ${kopf('Prüfer', 'pruefer', 'maxlength="40"')}
+      ${kopf('Messgerät', 'messgeraet', 'maxlength="40"')}
+      ${kopf('Seriennummer', 'seriennummer', 'maxlength="40"')}
+    </div>
+    <div class="head abstand"><h2 class="sec">Messwerte</h2>
+      <p>${n} Messung${n === 1 ? '' : 'en'} · ergibt ${seiten} Seite${seiten === 1 ? '' : 'n'} (${art.zeilenJeSeite} Zeilen je Seite)</p></div>
+    <div class="list">${p.zeilen.map((z, i) => `
+      <div class="card messzeile">
+        <div class="zkopf"><b>Zeile ${i + 1}</b>
+          <button class="small danger" data-act="zeile-del" data-id="${esc(z.id)}">Entfernen</button></div>
+        <div class="mgrid">${art.spalten.map(s => eingabe(z, s)).join('')}</div>
+      </div>`).join('')}
+    </div>
+    <div class="foot"><button class="primary" data-act="zeile-neu">+ Zeile</button>
+      <span>Neue Zeilen übernehmen „${esc(art.spalten[0].l)}“ aus der Zeile davor.</span></div>`;
+}
+
+/* --- .docx lesen und schreiben (eine .docx ist ein ZIP-Archiv) – ohne fremde Bibliotheken --- */
+const CRC_TAB = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let i = 0; i < 8; i++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_TAB[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+const durchStrom = async (bytes, s) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(s)).arrayBuffer());
+function zipLesen(buf) {
+  const b = new Uint8Array(buf), v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  let e = b.length - 22;
+  while (e >= 0 && v.getUint32(e, true) !== 0x06054b50) e--;
+  if (e < 0) throw meldung('Die Datei ist keine Word-Datei (.docx).');
+  const anzahl = v.getUint16(e + 10, true), out = [];
+  let p = v.getUint32(e + 16, true);
+  for (let i = 0; i < anzahl; i++) {
+    if (v.getUint32(p, true) !== 0x02014b50) throw meldung('Die Word-Datei ist beschädigt.');
+    const nl = v.getUint16(p + 28, true), off = v.getUint32(p + 42, true);
+    const start = off + 30 + v.getUint16(off + 26, true) + v.getUint16(off + 28, true), csize = v.getUint32(p + 20, true);
+    out.push({ name: td.decode(b.subarray(p + 46, p + 46 + nl)), methode: v.getUint16(p + 10, true),
+      crc: v.getUint32(p + 16, true), csize, usize: v.getUint32(p + 24, true), daten: b.slice(start, start + csize) });
+    p += 46 + nl + v.getUint16(p + 30, true) + v.getUint16(p + 32, true);
+  }
+  return out;
+}
+async function zipEntpacken(z) {
+  if (z.methode === 0) return z.daten;
+  if (z.methode === 8) return durchStrom(z.daten, new DecompressionStream('deflate-raw'));
+  throw meldung('Die Word-Datei ist in einem unbekannten Format gepackt.');
+}
+async function zipSetzen(z, bytes) {
+  z.usize = bytes.length; z.crc = crc32(bytes);
+  try { z.daten = await durchStrom(bytes, new CompressionStream('deflate-raw')); z.methode = 8; }
+  catch (e) { z.daten = bytes; z.methode = 0; }   // ältere Browser: ungepackt speichern
+  z.csize = z.daten.length;
+}
+function zipBauen(eintraege, typ) {
+  const teile = [], zentral = [];
+  let off = 0;
+  const kopf = (laenge, sig) => {
+    const d = new DataView(new ArrayBuffer(laenge));
+    d.setUint32(0, sig, true);
+    return d;
+  };
+  for (const z of eintraege) {
+    const n = te.encode(z.name);
+    const l = kopf(30, 0x04034b50);
+    l.setUint16(4, 20, true); l.setUint16(6, 0x0800, true); l.setUint16(8, z.methode, true); l.setUint16(12, 0x21, true);
+    l.setUint32(14, z.crc, true); l.setUint32(18, z.csize, true); l.setUint32(22, z.usize, true); l.setUint16(26, n.length, true);
+    teile.push(l, n, z.daten);
+    const c = kopf(46, 0x02014b50);
+    c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, z.methode, true); c.setUint16(14, 0x21, true);
+    c.setUint32(16, z.crc, true); c.setUint32(20, z.csize, true); c.setUint32(24, z.usize, true); c.setUint16(28, n.length, true); c.setUint32(42, off, true);
+    zentral.push(c, n);
+    off += 30 + n.length + z.daten.length;
+  }
+  const groesse = zentral.reduce((s, x) => s + x.byteLength, 0);
+  const e = kopf(22, 0x06054b50);
+  e.setUint16(8, eintraege.length, true); e.setUint16(10, eintraege.length, true); e.setUint32(12, groesse, true); e.setUint32(16, off, true);
+  return new Blob([...teile, ...zentral, e], { type: typ });
+}
+
+/* --- Vorlage füllen --- */
+const xmlEsc = s => String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+  .replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Wie auf dem Papierformular: Eintrag auf einer Unterstrich-Linie
+const linie = (v, links, gesamt) => { v = String(v || '').trim(); return v ? '_'.repeat(links) + v + '_'.repeat(Math.max(3, gesamt - links - v.length)) : '_'.repeat(gesamt); };
+function vorlagePruefen(xml, art) {
+  if (!xml.includes('{{Z1}}') || !xml.includes('{{DATUM}}'))
+    throw meldung(`Diese Datei enthält keine App-Platzhalter. Bitte die Datei „App-Vorlage ${art.kurz}.docx“ wählen.`);
+  const n = new Set(xml.match(/\{\{Z\d+\}\}/g)).size;
+  if (n !== zellenAnzahl(art))
+    throw meldung(`Die Vorlage hat ${n} Tabellenspalten, für die ${art.name} werden ${zellenAnzahl(art)} erwartet. Ist es die richtige Vorlage?`);
+}
+// Folgeseiten beginnen mit einem Seitenumbruch vor dem ersten Absatz
+function seitenumbruch(x) {
+  const m = /<w:p(?: [^>]*)?>/.exec(x);
+  if (!m) return x;
+  if (m[0].endsWith('/>')) return x.slice(0, m.index) + '<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>' + x.slice(m.index + m[0].length);
+  let i = m.index + m[0].length;
+  if (!x.startsWith('<w:pPr>', i)) return x.slice(0, i) + '<w:pPr><w:pageBreakBefore/></w:pPr>' + x.slice(i);
+  i += 7;
+  const vorher = /^(<w:pStyle [^>]*\/>)?(<w:keepNext(?: [^>]*)?\/>)?(<w:keepLines(?: [^>]*)?\/>)?(<w:pageBreakBefore(?: [^>]*)?\/>)?/.exec(x.slice(i));
+  return x.slice(0, i) + (vorher[1] || '') + (vorher[2] || '') + (vorher[3] || '') + '<w:pageBreakBefore/>' + x.slice(i + vorher[0].length);
+}
+function dokumentXml(xml, art, p) {
+  const a = xml.indexOf('<w:body>') + 8, e = xml.lastIndexOf('<w:sectPr');
+  if (a < 8 || e < a) throw meldung('Die Vorlage hat einen unbekannten Aufbau.');
+  const seite = xml.slice(a, e), t = seite.indexOf('{{Z1}}');
+  const zs = Math.max(seite.lastIndexOf('<w:tr>', t), seite.lastIndexOf('<w:tr ', t)), ze = seite.indexOf('</w:tr>', t) + 7;
+  if (t < 0 || zs < 0 || ze < 7) throw meldung('In der Vorlage fehlt die Tabellenzeile mit {{Z1}}.');
+  const muster = seite.slice(zs, ze);
+  const zeilen = p.zeilen.filter(z => !zeileLeer(art, z));
+  const n = art.zeilenJeSeite, seiten = Math.max(1, Math.ceil(zeilen.length / n));
+  const werte = {
+    FIRMA1: linie(p.firma1, 8, 30), FIRMA2: linie(p.firma2, 8, 30), FIRMA3: linie(p.firma3, 7, 30),
+    DATUM: linie(p.datum ? datum(p.datum) : '', 2, 15), PRUEFER: linie(p.pruefer, 1, 18),
+    MESSGERAET: linie(p.messgeraet, 1, 22), SERIENNUMMER: linie(p.seriennummer, 1, 20),
+  };
+  let out = '';
+  for (let s = 0; s < seiten; s++) {
+    const teil = zeilen.slice(s * n, s * n + n);
+    const reihen = Array.from({ length: n }, (_, i) => {
+      const c = teil[i] ? zellen(art, teil[i]) : [];
+      return muster.replace(/\{\{Z(\d+)\}\}/g, (_, j) => xmlEsc(c[j - 1]));
+    }).join('');
+    let x = seite.slice(0, zs) + reihen + seite.slice(ze);
+    const w = { ...werte, SEITE: linie(`${s + 1}/${seiten}`, 5, 18) };
+    x = x.replace(/\{\{([A-Z0-9]+)\}\}/g, (_, key) => xmlEsc(w[key] ?? ''));
+    if (s > 0) {
+      // Kennungen von Logo/Textfeldern je Seite eindeutig halten, sonst meldet Word einen Fehler
+      x = seitenumbruch(x)
+        .replace(/(<wp:docPr id=")(\d+)/g, (_, v, id) => v + (Number(id) + s * 1000))
+        .replace(/(<(?:wps|pic|wpg):cNvPr id=")(\d+)/g, (_, v, id) => v + (Number(id) + s * 1000))
+        .replace(/_x0000_s(\d+)/g, (_, id) => '_x0000_s' + (Number(id) + s * 1000))
+        .replace(/ w14:(?:paraId|textId|anchorId)="[0-9A-Fa-f]+"/g, '')
+        .replace(/<w:bookmark(?:Start|End) [^>]*\/>/g, '');
+    }
+    out += x;
+  }
+  return xml.slice(0, a) + out + xml.slice(e);
+}
+async function protokollDocx(p) {
+  const art = protArt(p.art);
+  const v = vorlagenListe().find(x => x.art === art.id);
+  if (!v) throw meldung(`Für die ${art.name} ist noch keine Word-Vorlage hinterlegt. Auf der Startseite unter „Prüfprotokolle: Vorlagen & Prüfer“ kannst du sie auswählen.`);
+  const blob = await dateiHolen(v.id);
+  if (!blob) throw meldung('Die Word-Vorlage ist auf diesem Gerät nicht vorhanden. Melde dich bei Google Drive an, damit sie geladen wird.');
+  const eintraege = zipLesen(await blob.arrayBuffer());
+  const doc = eintraege.find(z => z.name === 'word/document.xml');
+  if (!doc) throw meldung('Die Vorlage ist keine gültige Word-Datei.');
+  const xml = td.decode(await zipEntpacken(doc));
+  vorlagePruefen(xml, art);
+  await zipSetzen(doc, te.encode(dokumentXml(xml, art, p)));
+  return zipBauen(eintraege, DOCX_TYP);
+}
+const dateiname = s => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+async function protokollWord(k, g, it, p, knopf) {
+  const art = protArt(p.art);
+  eingabenSichern();
+  if (knopf) { knopf.disabled = true; knopf.textContent = 'Wird erstellt …'; }
+  try {
+    const blob = await protokollDocx(p);
+    const name = dateiname(`Prüfprotokoll ${art.kurz} ${k.name} ${g.name} ${it.name} ${datum(p.datum)}`) + '.docx';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    // Zusätzlich als Prüfbericht beim Gerät ablegen (ersetzt die Fassung desselben Protokolls)
+    const alt = (it.dokumente ||= []).filter(d => d.protokoll === p.id);
+    const id = uid();
+    await dateiPut(id, blob);
+    it.dokumente = it.dokumente.filter(d => d.protokoll !== p.id);
+    it.dokumente.push({ id, art: 'bericht', name: `Prüfprotokoll ${art.kurz} vom ${datum(p.datum)}`, datei: name, typ: DOCX_TYP, datum: heute(), protokoll: p.id });
+    if (p.datum && p.datum > (it.letztePruefung || '') &&
+      confirm(`Die Word-Datei wurde erstellt und unter „Dokumente“ abgelegt.\n\nLetzte Prüfung von „${it.name}“ auf den ${datum(p.datum)} setzen?`)) it.letztePruefung = p.datum;
+    speichern(); dateienEntfernen(alt);
+  } catch (e) {
+    alert(e.nachricht || 'Die Word-Datei konnte nicht erstellt werden.');
+  } finally {
+    if (knopf?.isConnected) { knopf.disabled = false; knopf.textContent = 'Word-Datei erstellen'; }
+  }
+}
+
+function vorlagenForm() {
+  const e = einstellungen();
+  const stand = art => { const v = vorlagenListe().find(x => x.art === art.id); return v ? `hinterlegt: ${esc(v.datei)} (${datum(v.datum)})` : 'noch keine Vorlage'; };
+  formular('Prüfprotokolle: Vorlagen & Prüfer',
+    PROTOKOLL_ARTEN.map(art => `<label>Word-Vorlage ${esc(art.name)} – <span class="sub">${stand(art)}</span>
+      <input type="file" name="vorlage_${art.id}" accept=".docx,${DOCX_TYP}"></label>`).join('') +
+    `<p class="sub">Nur nötig beim ersten Mal oder wenn sich das Formular ändert. Die Vorlagen werden verschlüsselt gespeichert
+      und über Google Drive auf deine anderen Geräte übertragen.</p>` +
+    feld('Prüfer (Vorgabe für neue Protokolle)', 'pruefer', e.pruefer, 'maxlength="40"') +
+    `<div class="two">${feld('Messgerät', 'messgeraet', e.messgeraet, 'maxlength="40"')}${feld('Seriennummer', 'seriennummer', e.seriennummer, 'maxlength="40"')}</div>`,
+    async (d, form) => {
+      for (const art of PROTOKOLL_ARTEN) {
+        const f = form.querySelector(`[name=vorlage_${art.id}]`).files[0];
+        if (!f) continue;
+        let xml;
+        try {
+          const doc = zipLesen(await f.arrayBuffer()).find(z => z.name === 'word/document.xml');
+          if (!doc) throw meldung('');
+          xml = td.decode(await zipEntpacken(doc));
+        } catch (err) { throw meldung(`„${f.name}“ ist keine gültige Word-Datei (.docx).`); }
+        vorlagePruefen(xml, art);
+        const id = uid();
+        await dateiPut(id, new Blob([f], { type: DOCX_TYP }));
+        const liste = vorlagenListe(), alt = liste.filter(x => x.art === art.id);
+        db.protokollVorlagen.dokumente = [...liste.filter(x => x.art !== art.id), { id, art: art.id, name: f.name, datei: f.name, typ: DOCX_TYP, datum: heute() }];
+        dateienEntfernen(alt);
+      }
+      Object.assign(e, { pruefer: d.pruefer.trim(), messgeraet: d.messgeraet.trim(), seriennummer: d.seriennummer.trim() });
+    });
+}
+
 // Derzeit ohne Button in der App (auf Wunsch entfernt) – bei Bedarf wieder über einen Knopf mit data-act="pw-aendern" anbinden
 function passwortAendernForm() {
   formular('App-Passwort ändern',
@@ -831,6 +1155,31 @@ app.addEventListener('click', e => {
       m.behoben = !m.behoben; m.behobenAm = m.behoben ? heute() : '';
       speichern(); return render();
     }
+    case 'prot-neu':
+      return auswahlDialog('Neues Prüfprotokoll', 'Welches Formular möchtest du ausfüllen?',
+        [...PROTOKOLL_ARTEN.map((a, i) => ({ wert: a.id, label: a.name, klasse: i ? '' : 'primary' })), { wert: 'abbrechen', label: 'Abbrechen' }])
+        .then(w => { if (w !== 'abbrechen' && entsperrt()) protokollAnlegen(kunde, geb, kt, item, w); });
+    case 'prot-word': {
+      const prot = id ? item.protokolle.find(x => x.id === id) : aktuellesProtokoll();
+      return prot && protokollWord(kunde, geb, item, prot, b);
+    }
+    case 'prot-del': return weg(item.protokolle, x => `${protArt(x.art).name} vom ${datum(x.datum)} löschen?\n\nEine bereits erstellte Word-Datei bleibt unter „Dokumente“ erhalten.`);
+    case 'prot-fertig': location.hash = `#/k/${kunde.id}/g/${geb.id}/${kt.id}/${item.id}`; return;
+    case 'zeile-neu': {
+      const prot = aktuellesProtokoll(), art = protArt(prot.art), s0 = art.spalten[0];
+      const z = { id: uid() };
+      if (s0.mitnehmen && prot.zeilen.length) z[s0.k] = prot.zeilen[prot.zeilen.length - 1][s0.k] || '';
+      prot.zeilen.push(z); clearTimeout(eingabeTimer); eingabeTimer = null; speichern(); render();
+      const feld2 = app.querySelector(`[data-z="${z.id}"][data-k="${art.spalten[1].k}"]`);
+      feld2?.closest('.messzeile').scrollIntoView({ block: 'center' }); feld2?.focus();
+      return;
+    }
+    case 'zeile-del': {
+      const prot = aktuellesProtokoll(), z = prot.zeilen.find(x => x.id === id);
+      if (!z || (!zeileLeer(protArt(prot.art), z) && !confirm('Diese Zeile mit ihren Messwerten entfernen?'))) return;
+      prot.zeilen = prot.zeilen.filter(x => x !== z); clearTimeout(eingabeTimer); eingabeTimer = null; speichern(); return render();
+    }
+    case 'vorlagen': return vorlagenForm();
     case 'export': return exportieren();
     case 'import': return document.getElementById('importFile').click();
     case 'kunde-import': return document.getElementById('kundenImportFile').click();
@@ -946,7 +1295,7 @@ function kundeErsetzen(alt, neu) {
   const ort = (it, g) => (it.standort || g.name || '').trim().toLowerCase();
   const name = it => it.name.trim().toLowerCase();
   const altListe = alt.gebaeude.flatMap(g => g.items.map(it => ({ it, ort: ort(it, g), frei: true })));
-  const hatDaten = it => (it.maengel || []).length || (it.dokumente || []).length;
+  const hatDaten = it => (it.maengel || []).length || (it.dokumente || []).length || (it.protokolle || []).length;
   const b = { uebernommen: 0, geparkt: 0, weg: 0 };
   const neuListe = neu.gebaeude.flatMap(g => g.items.map(it => ({ it, ort: ort(it, g), treffer: null })));
   // Durchgang 1: gleiches Gerät am gleichen Ort
@@ -964,7 +1313,7 @@ function kundeErsetzen(alt, neu) {
     if (!treffer) continue;
     const a = treffer.it;
     let geaendert = false;
-    if (hatDaten(a)) { it.maengel = a.maengel || []; it.dokumente = a.dokumente || []; geaendert = true; }
+    if (hatDaten(a)) { it.maengel = a.maengel || []; it.dokumente = a.dokumente || []; it.protokolle = a.protokolle || []; geaendert = true; }
     if (a.letztePruefung && a.letztePruefung > (it.letztePruefung || '')) { it.letztePruefung = a.letztePruefung; it.intervall = a.intervall; geaendert = true; }
     if (a.bemerkung && !it.bemerkung.includes(a.bemerkung)) it.bemerkung = [it.bemerkung, a.bemerkung].filter(Boolean).join(' · ');
     if (geaendert) b.uebernommen++;
