@@ -504,7 +504,6 @@ function viewKunden() {
       <button class="small" data-act="kunde-import">Kunde aus Importdatei hinzufügen</button>
       <button class="small" data-act="export">Datensicherung exportieren</button>
       <button class="small" data-act="import">Sicherung importieren</button>
-      <button class="small" data-act="pw-aendern">App-Passwort ändern</button>
       <span>🔒 Alle Daten sind mit deinem App-Passwort verschlüsselt – auf diesem Gerät und in Google Drive.
         Die App sperrt sich nach ${SPERRE_MINUTEN} Minuten ohne Bedienung.</span>
     </div>`;
@@ -759,6 +758,7 @@ document.getElementById('fotoFile').addEventListener('change', async e => {
   } catch (err) { alert('Foto konnte nicht gespeichert werden. Möglicherweise ist der Speicher des Browsers voll.'); }
 });
 
+// Derzeit ohne Button in der App (auf Wunsch entfernt) – bei Bedarf wieder über einen Knopf mit data-act="pw-aendern" anbinden
 function passwortAendernForm() {
   formular('App-Passwort ändern',
     `<label>Bisheriges Passwort<input type="password" name="alt" autocomplete="current-password" required autofocus></label>
@@ -833,7 +833,6 @@ app.addEventListener('click', e => {
     }
     case 'export': return exportieren();
     case 'import': return document.getElementById('importFile').click();
-    case 'pw-aendern': return passwortAendernForm();
     case 'kunde-import': return document.getElementById('kundenImportFile').click();
   }
 });
