@@ -916,15 +916,76 @@ document.getElementById('kundenImportFile').addEventListener('change', async e =
   for (const k of neu) {
     const items = k.gebaeude.flatMap(g => g.items);
     const zahlen = KATS.map(kt => `${items.filter(i => i.typ === kt.id).length} ${kt.name}`).join(', ');
-    const schonDa = db.kunden.some(x => x.name.trim().toLowerCase() === k.name.toLowerCase());
-    if (!confirm(`${schonDa ? `Achtung: Einen Kunden „${k.name}“ gibt es schon – er würde ein zweites Mal angelegt.\n\n` : ''}` +
-      `Kunde „${k.name}“ hinzufügen?\n\n${k.gebaeude.length} Gebäudeteile\n${zahlen}\n\nDeine übrigen Kunden bleiben unverändert.`)) continue;
-    db.kunden.push(k);
+    const umfang = `${k.gebaeude.length} Gebäudeteile, ${zahlen}`;
+    const alt = db.kunden.find(x => x.name.trim().toLowerCase() === k.name.toLowerCase());
+    let aktion = 'neu';
+    if (alt) {
+      aktion = await auswahlDialog(`Kunde „${k.name}“ gibt es schon`,
+        `Die Importdatei enthält ${umfang}.\n\n„Ersetzen“ baut den Kunden nach der neuen Liste auf. Mängel, Fotos und Dokumente, ` +
+        `die du in der App erfasst hast, werden zu den passenden Geräten übernommen – ebenso neuere Prüfdaten aus der App.`,
+        [{ wert: 'ersetzen', label: 'Ersetzen', klasse: 'primary' }, { wert: 'neu', label: 'Zusätzlich anlegen' }, { wert: 'abbrechen', label: 'Abbrechen' }]);
+    } else if (!confirm(`Kunde „${k.name}“ hinzufügen?\n\n${umfang}\n\nDeine übrigen Kunden bleiben unverändert.`)) aktion = 'abbrechen';
+    if (aktion === 'abbrechen') continue;
+    if (aktion === 'ersetzen') {
+      const b = kundeErsetzen(alt, k);
+      db.kunden[db.kunden.indexOf(alt)] = k;
+      alert(`Kunde „${k.name}“ wurde nach der neuen Liste aufgebaut.\n\n` +
+        `• ${b.uebernommen} Geräte mit Mängeln, Dokumenten oder neuerem Prüfdatum aus der App übernommen` +
+        (b.geparkt ? `\n• ${b.geparkt} Geräte mit Mängeln oder Dokumenten passten zu keinem Gerät der neuen Liste – sie stehen im Gebäudeteil „${PARKPLATZ}“` : '') +
+        (b.weg ? `\n• ${b.weg} Geräte ohne eigene Einträge, die in der neuen Liste nicht mehr vorkommen, wurden entfernt` : ''));
+    } else db.kunden.push(k);
     speichern();
     location.hash = '#/k/' + k.id;
   }
   render();
 });
+
+// Bestehenden Kunden durch die neue Liste ersetzen, ohne in der App erfasste Daten zu verlieren
+const PARKPLATZ = 'Nicht zugeordnet (alte Liste)';
+function kundeErsetzen(alt, neu) {
+  neu.id = alt.id; neu.ort ||= alt.ort;
+  const ort = (it, g) => (it.standort || g.name || '').trim().toLowerCase();
+  const name = it => it.name.trim().toLowerCase();
+  const altListe = alt.gebaeude.flatMap(g => g.items.map(it => ({ it, ort: ort(it, g), frei: true })));
+  const hatDaten = it => (it.maengel || []).length || (it.dokumente || []).length;
+  const b = { uebernommen: 0, geparkt: 0, weg: 0 };
+  const neuListe = neu.gebaeude.flatMap(g => g.items.map(it => ({ it, ort: ort(it, g), treffer: null })));
+  // Durchgang 1: gleiches Gerät am gleichen Ort
+  for (const n of neuListe) {
+    n.treffer = altListe.find(a => a.frei && a.it.typ === n.it.typ && name(a.it) === name(n.it) && a.ort === n.ort) || null;
+    if (n.treffer) n.treffer.frei = false;
+  }
+  // Durchgang 2: übrige Geräte nur zuordnen, wenn der Name auf beiden Seiten eindeutig ist
+  for (const n of neuListe.filter(x => !x.treffer)) {
+    const passt = x => x.it.typ === n.it.typ && name(x.it) === name(n.it);
+    const kandidaten = altListe.filter(a => a.frei && passt(a));
+    if (kandidaten.length === 1 && neuListe.filter(x => !x.treffer && passt(x)).length === 1) { n.treffer = kandidaten[0]; n.treffer.frei = false; }
+  }
+  for (const { it, treffer } of neuListe) {
+    if (!treffer) continue;
+    const a = treffer.it;
+    let geaendert = false;
+    if (hatDaten(a)) { it.maengel = a.maengel || []; it.dokumente = a.dokumente || []; geaendert = true; }
+    if (a.letztePruefung && a.letztePruefung > (it.letztePruefung || '')) { it.letztePruefung = a.letztePruefung; it.intervall = a.intervall; geaendert = true; }
+    if (a.bemerkung && !it.bemerkung.includes(a.bemerkung)) it.bemerkung = [it.bemerkung, a.bemerkung].filter(Boolean).join(' · ');
+    if (geaendert) b.uebernommen++;
+  }
+  const rest = altListe.filter(a => a.frei);
+  const behalten = rest.filter(a => hatDaten(a.it)).map(a => a.it);
+  b.geparkt = behalten.length; b.weg = rest.length - behalten.length;
+  if (behalten.length) neu.gebaeude.push({ id: uid(), name: PARKPLATZ, items: behalten });
+  return b;
+}
+function auswahlDialog(titel, text, optionen) {
+  return new Promise(res => {
+    dlg.innerHTML = `<h2>${esc(titel)}</h2><p class="sub" style="white-space:pre-line">${esc(text)}</p>
+      <div class="dlg-actions">${optionen.map((o, i) => `<button class="${o.klasse || ''}" data-i="${i}">${esc(o.label)}</button>`).join('')}</div>`;
+    dlg.querySelectorAll('[data-i]').forEach(b => b.onclick = () => { dlg.oncancel = null; dlg.close(); res(optionen[b.dataset.i].wert); });
+    dlg.oncancel = () => { dlg.oncancel = null; res('abbrechen'); };
+    dlg.classList.remove('breit');
+    dlg.showModal();
+  });
+}
 
 /* ---------- Google Drive: verschlüsselte Daten und Dateien im Ordner "DGUV-V3 App" ---------- */
 const CKEY = 'dguv-v3-cloud', TKEY = 'dguv-v3-token', ORDNER = 'DGUV-V3 App';
