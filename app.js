@@ -614,11 +614,11 @@ function viewItem(k, g, kt, it) {
     ${it.bemerkung ? `<div class="card" style="margin-bottom:22px"><div class="label">Bemerkung</div>${esc(it.bemerkung)}</div>` : ''}
     <div class="head"><h2 class="sec">Prüfprotokolle</h2><button class="primary" data-act="prot-neu">+ Prüfprotokoll</button></div>
     <div class="list" style="margin-bottom:28px">${(it.protokolle || []).length ? [...it.protokolle].sort((a, b) => (b.datum || '').localeCompare(a.datum || '')).map(x => {
-      const art = protArt(x.art), n = x.zeilen.filter(z => !zeileLeer(art, z)).length;
+      const art = protArt(x.art);
       return `<div class="row">
         <a class="main" href="#/k/${k.id}/g/${g.id}/${kt.id}/${it.id}/p/${esc(x.id)}">
           <div class="title">${esc(art.name)} vom ${datum(x.datum)}</div>
-          <div class="sub">${n} Messung${n === 1 ? '' : 'en'}${x.pruefer ? ' · Prüfer: ' + esc(x.pruefer) : ''}</div>
+          <div class="sub">${esc(protInfo(x))}${x.pruefer ? ' · Prüfer: ' + esc(x.pruefer) : ''}</div>
         </a>
         <div class="actions">
           <button class="small" data-act="prot-word" data-id="${esc(x.id)}">Word-Datei</button>
@@ -805,8 +805,38 @@ const PROTOKOLL_ARTEN = [
     { k: 'zln', l: 'ZI L/N (Ω)', zahl: true },
     { k: 'iln', l: 'I L/N (A)', zahl: true },
   ] },
+  // Einseitiges Formular: Kopfangaben + feste Prüfpunkte mit Ergebnis und Bemerkung
+  { id: 'maschine', name: 'Maschinen-Prüfung', kurz: 'Maschine', formular: true, kats: ['maschinen', 'tore', 'kraene'],
+    zeichenKopf: 17, zeichenBemerkung: 33,   // so viele Zeichen passen in 11 pt in eine Zelle
+    felder: [
+      { k: 'kunde', l: 'Kunde', ph: 'KUNDE' }, { k: 'anlage', l: 'Anlage', ph: 'ANLAGE' },
+      { k: 'inventar', l: 'Inventar-Nr.', ph: 'INVENTAR' }, { k: 'hersteller', l: 'Hersteller', ph: 'HERSTELLER' },
+      { k: 'standort', l: 'Standort', ph: 'STANDORT' }, { k: 'fabriknr', l: 'Fabriknummer', ph: 'FABRIKNR' },
+      { k: 'datum', l: 'Prüfdatum', ph: 'DATUM', datum: true }, { k: 'baujahr', l: 'Baujahr', ph: 'BAUJAHR', zahl: true },
+      { k: 'pruefer', l: 'Prüfung durchgeführt durch', ph: 'PRUEFER' }, { k: 'naechste', l: 'Nächste Prüfung', ph: 'NAECHSTE', datum: true },
+    ],
+    punkte: ['Dokumentation', 'Besichtigung der Anlage', 'Schutzabdeckungen', 'Zuleitung Schleifenimpedanz',
+      'Isolationsmessung 500V DC', 'Durchgängigkeit Schutzleiter', 'RCD- testen, Prüfen', 'Sicherheitseinrichtungen',
+      'Restspannungsprüfung', 'Hauptschalter', 'Not-Aus Funktion', 'Endbegrenzung', 'Funktionsprüfung',
+      'Wiederkehrende Prüfung', 'DGUV-Kennzeichnung'] },
 ];
+const PUNKT_ERGEBNIS = [['', '–'], ['io', 'In Ordnung'], ['mangel', 'Mangel'], ['behoben', 'Mangel behoben']];
 const protArt = id => PROTOKOLL_ARTEN.find(a => a.id === id) || PROTOKOLL_ARTEN[0];
+// Kurzbeschreibung für Listen: Anzahl Messungen bzw. bewertete Prüfpunkte
+function protInfo(p) {
+  const art = protArt(p.art);
+  if (art.formular) {
+    const n = (p.punkte || []).filter(x => x.s).length, m = (p.punkte || []).filter(x => x.s === 'mangel').length;
+    return `${n} von ${art.punkte.length} Prüfpunkten bewertet${m ? ` · ${m} Mangel${m === 1 ? '' : '/Mängel'}` : ''}`;
+  }
+  const n = p.zeilen.filter(z => !zeileLeer(art, z)).length;
+  return `${n} Messung${n === 1 ? '' : 'en'}`;
+}
+const plusMonate = (iso, monate) => {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00'); d.setMonth(d.getMonth() + (Number(monate) || 12));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 // Zellen in der Reihenfolge der Word-Tabelle; i.O./n.i.O. belegt zwei Spalten mit einem Kreuz
 const zellen = (art, z) => art.spalten.flatMap(s => s.io ? [z[s.k] === 'io' ? 'X' : '', z[s.k] === 'nio' ? 'X' : ''] : [z[s.k] || '']);
 const zellenAnzahl = art => zellen(art, {}).length;
@@ -822,35 +852,92 @@ function eingabenSichern() {
   if (entsperrt()) speichern();
 }
 app.addEventListener('input', e => {
-  const el = e.target, prot = aktuellesProtokoll();
+  const el = e.target, it = aktuellesItem(), prot = aktuellesProtokoll();
   if (!prot || !entsperrt()) return;
-  if (el.dataset.pk) prot[el.dataset.pk] = el.value;
+  if (el.dataset.pk) {
+    // Beim Formular folgt die nächste Prüfung dem Prüfdatum, solange sie nicht von Hand geändert wurde
+    if (el.dataset.pk === 'datum' && protArt(prot.art).formular && it && prot.naechste === plusMonate(prot.datum, it.intervall)) {
+      prot.naechste = plusMonate(el.value, it.intervall);
+      const n = app.querySelector('[data-pk="naechste"]'); if (n) n.value = prot.naechste;
+    }
+    prot[el.dataset.pk] = el.value;
+  }
   else if (el.dataset.z) { const z = prot.zeilen.find(x => x.id === el.dataset.z); if (z) z[el.dataset.k] = el.value; }
+  else if (el.dataset.pt) { const pt = prot.punkte?.[Number(el.dataset.pt)]; if (pt) pt[el.dataset.k] = el.value; }
   else return;
   clearTimeout(eingabeTimer); eingabeTimer = setTimeout(eingabenSichern, 800);
 });
-app.addEventListener('change', e => { if (e.target.dataset.pk || e.target.dataset.z) eingabenSichern(); });
-function aktuellesProtokoll() {
+app.addEventListener('change', e => {
+  const d = e.target.dataset;
+  if (!(d.pk || d.z || d.pt)) return;
+  if (d.pt && d.k === 's') e.target.closest('.messzeile')?.classList.toggle('mangel', e.target.value === 'mangel');
+  eingabenSichern();
+});
+function aktuellesItem() {
   const p = location.hash.replace(/^#\/?/, '').split('/');
   if (p[6] !== 'p' || !db) return null;
-  const it = db.kunden.find(k => k.id === p[1])?.gebaeude.find(g => g.id === p[3])?.items.find(i => i.id === p[5]);
-  return it?.protokolle?.find(x => x.id === p[7]) || null;
+  return db.kunden.find(k => k.id === p[1])?.gebaeude.find(g => g.id === p[3])?.items.find(i => i.id === p[5]) || null;
+}
+function aktuellesProtokoll() {
+  const p = location.hash.replace(/^#\/?/, '').split('/');
+  return aktuellesItem()?.protokolle?.find(x => x.id === p[7]) || null;
 }
 
 function protokollAnlegen(k, g, kt, it, artId) {
   const e = einstellungen(), art = protArt(artId);
-  const erste = { id: uid() };
-  if (art.spalten[0].mitnehmen) erste[art.spalten[0].k] = it.name;
-  const p = { id: uid(), art: art.id, datum: heute(), firma1: k.name, firma2: k.ort || '',
-    firma3: `${g.name} ${it.name}`.trim(), pruefer: e.pruefer || '', messgeraet: e.messgeraet || '',
-    seriennummer: e.seriennummer || '', zeilen: [erste], erstellt: Date.now() };
+  let p;
+  if (art.formular) {
+    p = { id: uid(), art: art.id, datum: heute(), kunde: k.name, anlage: it.name,
+      inventar: '', hersteller: '', standort: [g.name, it.standort].filter(Boolean).join(' · '), fabriknr: '', baujahr: '',
+      pruefer: e.pruefer || '', naechste: plusMonate(heute(), it.intervall),
+      punkte: art.punkte.map(() => ({ s: '', t: '' })), erstellt: Date.now() };
+    // Angaben zur Maschine aus dem letzten Protokoll übernehmen – die ändern sich ja nicht
+    const vorher = [...(it.protokolle || [])].filter(x => x.art === art.id).sort((a, b) => (b.datum || '').localeCompare(a.datum || ''))[0];
+    if (vorher) for (const f of ['inventar', 'hersteller', 'fabriknr', 'baujahr']) p[f] = vorher[f] || '';
+  } else {
+    const erste = { id: uid() };
+    if (art.spalten[0].mitnehmen) erste[art.spalten[0].k] = it.name;
+    p = { id: uid(), art: art.id, datum: heute(), firma1: k.name, firma2: k.ort || '',
+      firma3: `${g.name} ${it.name}`.trim(), pruefer: e.pruefer || '', messgeraet: e.messgeraet || '',
+      seriennummer: e.seriennummer || '', zeilen: [erste], erstellt: Date.now() };
+  }
   (it.protokolle ||= []).push(p);
   speichern();
   location.hash = `#/k/${k.id}/g/${g.id}/${kt.id}/${it.id}/p/${p.id}`;
 }
 
+function viewFormular(k, g, it, p, art) {
+  const feldHtml = f => `<label>${esc(f.l)}<input data-pk="${f.k}" value="${esc(p[f.k])}"
+    ${f.datum ? 'type="date"' : `maxlength="45" autocomplete="off" ${f.zahl ? 'inputmode="numeric"' : ''}`}></label>`;
+  app.innerHTML = `
+    <div class="head"><h1>📝 ${esc(art.name)}</h1>
+      <div class="actions">
+        <button class="primary" data-act="prot-word">Word-Datei erstellen</button>
+        <button data-act="prot-fertig">Fertig</button>
+      </div>
+      <p>${esc(k.name)} · ${esc(g.name)} · ${esc(it.name)} · Eingaben werden automatisch gespeichert</p></div>
+    <div class="card protkopf">${art.felder.map(feldHtml).join('')}</div>
+    <div class="head abstand"><h2 class="sec">Prüfpunkte</h2>
+      <button data-act="punkte-io">Offene Punkte „In Ordnung“</button>
+      <p>${esc(protInfo(p))}</p></div>
+    <div class="list">${art.punkte.map((name, i) => {
+      const pt = p.punkte[i] || (p.punkte[i] = { s: '', t: '' });
+      return `<div class="card messzeile${pt.s === 'mangel' ? ' mangel' : ''}">
+        <div class="zkopf"><b>${i + 1}. ${esc(name)}</b></div>
+        <div class="mgrid">
+          <label>Ergebnis<select data-pt="${i}" data-k="s">
+            ${PUNKT_ERGEBNIS.map(([v, t]) => `<option value="${v}" ${(pt.s || '') === v ? 'selected' : ''}>${t}</option>`).join('')}
+          </select></label>
+          <label class="breit">Bemerkung<input data-pt="${i}" data-k="t" value="${esc(pt.t)}" maxlength="60" autocomplete="off"></label>
+        </div>
+      </div>`; }).join('')}
+    </div>`;
+}
+
 function viewProtokoll(k, g, kt, it, p) {
-  const art = protArt(p.art), n = p.zeilen.filter(z => !zeileLeer(art, z)).length;
+  const art = protArt(p.art);
+  if (art.formular) return viewFormular(k, g, it, p, art);
+  const n = p.zeilen.filter(z => !zeileLeer(art, z)).length;
   const seiten = Math.max(1, Math.ceil(n / art.zeilenJeSeite));
   const kopf = (l, key, extra = '') => `<label>${l}<input data-pk="${key}" value="${esc(p[key])}" ${extra}></label>`;
   const eingabe = (z, s) => s.io
@@ -956,6 +1043,14 @@ const xmlEsc = s => String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u
 // Wie auf dem Papierformular: Eintrag auf einer Unterstrich-Linie
 const linie = (v, links, gesamt) => { v = String(v || '').trim(); return v ? '_'.repeat(links) + v + '_'.repeat(Math.max(3, gesamt - links - v.length)) : '_'.repeat(gesamt); };
 function vorlagePruefen(xml, art) {
+  if (art.formular) {
+    const n = new Set(xml.match(/\{\{P\d+I\}\}/g)).size;
+    if (!xml.includes('{{KUNDE}}') || !n)
+      throw meldung(`Diese Datei enthält keine App-Platzhalter. Bitte die Datei „App-Vorlage ${art.kurz}.docx“ wählen.`);
+    if (n !== art.punkte.length)
+      throw meldung(`Die Vorlage hat ${n} Prüfpunkte, für die ${art.name} werden ${art.punkte.length} erwartet. Ist es die richtige Vorlage?`);
+    return;
+  }
   if (!xml.includes('{{Z1}}') || !xml.includes('{{DATUM}}'))
     throw meldung(`Diese Datei enthält keine App-Platzhalter. Bitte die Datei „App-Vorlage ${art.kurz}.docx“ wählen.`);
   const n = new Set(xml.match(/\{\{Z\d+\}\}/g)).size;
@@ -973,7 +1068,33 @@ function seitenumbruch(x) {
   const vorher = /^(<w:pStyle [^>]*\/>)?(<w:keepNext(?: [^>]*)?\/>)?(<w:keepLines(?: [^>]*)?\/>)?(<w:pageBreakBefore(?: [^>]*)?\/>)?/.exec(x.slice(i));
   return x.slice(0, i) + (vorher[1] || '') + (vorher[2] || '') + (vorher[3] || '') + '<w:pageBreakBefore/>' + x.slice(i + vorher[0].length);
 }
+// Einseitiges Formular: nur Platzhalter ersetzen. Lange Einträge in Tabellenzellen werden kleiner geschrieben
+// (bis 7 pt), damit die Zeile nicht umbricht und das Formular auf eine Seite passt.
+function formularXml(xml, art, p) {
+  const w = formularWerte(art, p);
+  xml = xml.replace(/<w:r><w:rPr>((?:(?!<\/w:rPr>).)*)<\/w:rPr><w:t xml:space="preserve">\{\{([A-Z0-9]+)\}\}<\/w:t><\/w:r>/g, (m, rpr, key) => {
+    const platz = /^P\d+T$/.test(key) ? art.zeichenBemerkung : art.zeichenKopf, laenge = String(w[key] ?? '').length;
+    if (!platz || laenge <= platz) return m;
+    const sz = Math.max(14, Math.floor(22 * platz / laenge));
+    rpr = rpr.replace(/<w:szCs? [^>]*\/>/g, '') + `<w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>`;
+    return `<w:r><w:rPr>${rpr}</w:rPr><w:t xml:space="preserve">{{${key}}}</w:t></w:r>`;
+  });
+  return xml.replace(/\{\{([A-Z0-9]+)\}\}/g, (_, key) => xmlEsc(w[key] ?? ''));
+}
+function formularWerte(art, p) {
+  const w = {};
+  for (const f of art.felder) w[f.ph] = f.datum ? (p[f.k] ? datum(p[f.k]) : '') : p[f.k];
+  art.punkte.forEach((_, i) => {
+    const pt = p.punkte?.[i] || {}, n = i + 1;
+    w[`P${n}I`] = pt.s === 'io' ? 'X' : '';
+    w[`P${n}M`] = pt.s === 'mangel' || pt.s === 'behoben' ? 'X' : '';
+    w[`P${n}B`] = pt.s === 'behoben' ? 'X' : '';
+    w[`P${n}T`] = pt.t;
+  });
+  return w;
+}
 function dokumentXml(xml, art, p) {
+  if (art.formular) return formularXml(xml, art, p);
   const a = xml.indexOf('<w:body>') + 8, e = xml.lastIndexOf('<w:sectPr');
   if (a < 8 || e < a) throw meldung('Die Vorlage hat einen unbekannten Aufbau.');
   const seite = xml.slice(a, e), t = seite.indexOf('{{Z1}}');
@@ -1157,7 +1278,9 @@ app.addEventListener('click', e => {
     }
     case 'prot-neu':
       return auswahlDialog('Neues Prüfprotokoll', 'Welches Formular möchtest du ausfüllen?',
-        [...PROTOKOLL_ARTEN.map((a, i) => ({ wert: a.id, label: a.name, klasse: i ? '' : 'primary' })), { wert: 'abbrechen', label: 'Abbrechen' }])
+        [...PROTOKOLL_ARTEN.map(a => ({ wert: a.id, label: a.name,
+          klasse: (a.kats ? a.kats.includes(kt.id) : !['maschinen', 'tore', 'kraene'].includes(kt.id)) && a.id !== 'steckdose' ? 'primary' : '' })),
+         { wert: 'abbrechen', label: 'Abbrechen' }])
         .then(w => { if (w !== 'abbrechen' && entsperrt()) protokollAnlegen(kunde, geb, kt, item, w); });
     case 'prot-word': {
       const prot = id ? item.protokolle.find(x => x.id === id) : aktuellesProtokoll();
@@ -1178,6 +1301,12 @@ app.addEventListener('click', e => {
       const prot = aktuellesProtokoll(), z = prot.zeilen.find(x => x.id === id);
       if (!z || (!zeileLeer(protArt(prot.art), z) && !confirm('Diese Zeile mit ihren Messwerten entfernen?'))) return;
       prot.zeilen = prot.zeilen.filter(x => x !== z); clearTimeout(eingabeTimer); eingabeTimer = null; speichern(); return render();
+    }
+    case 'punkte-io': {
+      const prot = aktuellesProtokoll();
+      if (!prot?.punkte) return;
+      prot.punkte.forEach(pt => { if (!pt.s) pt.s = 'io'; });
+      eingabenSichern(); speichern(); return render();
     }
     case 'vorlagen': return vorlagenForm();
     case 'export': return exportieren();
