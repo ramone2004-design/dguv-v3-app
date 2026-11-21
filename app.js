@@ -797,8 +797,9 @@ const PROTOKOLL_ARTEN = [
   ] },
   { id: 'steckdose', name: 'Steckdosen-Prüfung', kurz: 'Steckdosen', zeilenJeSeite: 15, spalten: [
     { k: 'ort', l: 'Ort / Stromkreis', breit: true, mitnehmen: true },
-    { k: 'schuko', l: 'Schuko', zahl: true },
-    { k: 'cee', l: 'CEE', zahl: true },
+    // Steckdosentyp: ein Feld in der App, im Formular ein Kreuz in der Spalte Schuko und/oder CEE
+    { k: 'dose', l: 'Steckdosentyp', auswahl: [['schuko', 'Schuko'], ['cee', 'CEE'], ['beide', 'Schuko + CEE']],
+      zellen: z => { const d = doseVon(z); return [d === 'schuko' || d === 'beide' ? 'X' : '', d === 'cee' || d === 'beide' ? 'X' : '']; } },
     { k: 'schutz', l: 'Überstromschutzorgan', ph: 'z. B. B16' },
     { k: 'zlpe', l: 'ZI L/PE (Ω)', zahl: true },
     { k: 'ilpe', l: 'I L/PE (A)', zahl: true },
@@ -838,7 +839,13 @@ const plusMonate = (iso, monate) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 // Zellen in der Reihenfolge der Word-Tabelle; i.O./n.i.O. belegt zwei Spalten mit einem Kreuz
-const zellen = (art, z) => art.spalten.flatMap(s => s.io ? [z[s.k] === 'io' ? 'X' : '', z[s.k] === 'nio' ? 'X' : ''] : [z[s.k] || '']);
+const zellen = (art, z) => art.spalten.flatMap(s => s.io ? [z[s.k] === 'io' ? 'X' : '', z[s.k] === 'nio' ? 'X' : ''] : s.zellen ? s.zellen(z) : [z[s.k] || '']);
+// Frühere Steckdosen-Protokolle hatten Zahlen in „Schuko“/„CEE“ – daraus den Typ ableiten
+function doseVon(z) {
+  if (z.dose || !(String(z.schuko || '').trim() || String(z.cee || '').trim())) return z.dose || '';
+  const s = String(z.schuko || '').trim(), c = String(z.cee || '').trim();
+  return s && c ? 'beide' : s ? 'schuko' : 'cee';
+}
 const zellenAnzahl = art => zellen(art, {}).length;
 const zeileLeer = (art, z) => !art.spalten.some(s => String(z[s.k] || '').trim());
 const vorlagenListe = () => (db.protokollVorlagen ||= { dokumente: [] }).dokumente;
@@ -940,9 +947,12 @@ function viewProtokoll(k, g, kt, it, p) {
   const n = p.zeilen.filter(z => !zeileLeer(art, z)).length;
   const seiten = Math.max(1, Math.ceil(n / art.zeilenJeSeite));
   const kopf = (l, key, extra = '') => `<label>${l}<input data-pk="${key}" value="${esc(p[key])}" ${extra}></label>`;
-  const eingabe = (z, s) => s.io
+  // Alte Steckdosen-Zeilen einmalig auf den Steckdosentyp umstellen
+  for (const z of p.zeilen) if (art.id === 'steckdose' && !z.dose && (z.schuko || z.cee)) { z.dose = doseVon(z); delete z.schuko; delete z.cee; }
+  const wahl = s => s.io ? [['', '–'], ['io', 'i.O.'], ['nio', 'n.i.O.']] : s.auswahl ? [['', '–'], ...s.auswahl] : null;
+  const eingabe = (z, s) => wahl(s)
     ? `<label>${esc(s.l)}<select data-z="${esc(z.id)}" data-k="${s.k}">
-        ${[['', '–'], ['io', 'i.O.'], ['nio', 'n.i.O.']].map(([v, t]) => `<option value="${v}" ${z[s.k] === v || (!z[s.k] && !v) ? 'selected' : ''}>${t}</option>`).join('')}
+        ${wahl(s).map(([v, t]) => `<option value="${v}" ${z[s.k] === v || (!z[s.k] && !v) ? 'selected' : ''}>${t}</option>`).join('')}
       </select></label>`
     : `<label class="${s.breit ? 'breit' : ''}">${esc(s.l)}<input data-z="${esc(z.id)}" data-k="${s.k}" value="${esc(z[s.k])}"
         ${s.zahl ? 'inputmode="decimal"' : ''} ${s.ph ? `placeholder="${esc(s.ph)}"` : ''} maxlength="60" autocomplete="off"></label>`;
