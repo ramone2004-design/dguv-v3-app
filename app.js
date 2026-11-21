@@ -356,7 +356,8 @@ function render() {
   if (listKat) c.push(`<span>Alle ${listKat.name}</span>`);
   crumbs.innerHTML = c.join('<span>›</span>');
 
-  if (listKat) viewListe(kunde, listKat);
+  if (p[0] === 'qr') viewQr(p[1]);
+  else if (listKat) viewListe(kunde, listKat);
   else if (prot) viewProtokoll(kunde, geb, kat, item, prot);
   else if (item) viewItem(kunde, geb, kat, item);
   else if (kat) viewItems(kunde, geb, kat);
@@ -596,6 +597,7 @@ function viewItem(k, g, kt, it) {
   app.innerHTML = `
     <div class="head"><h1>${kt.icon} ${esc(it.name)}</h1>
       <div class="actions">
+        <button data-act="qr-zeigen">QR-Code</button>
         <button data-act="item-edit" data-id="${it.id}">Bearbeiten</button>
         <button class="danger" data-act="item-del" data-id="${it.id}">Löschen</button>
       </div>
@@ -1272,6 +1274,7 @@ app.addEventListener('click', e => {
     case 'geb-edit': return gebForm(kunde, kunde.gebaeude.find(g => g.id === id));
     case 'geb-del': return weg(kunde.gebaeude, g => `Gebäudeteil „${g.name}“ mit allen Einträgen löschen?`);
     case 'item-neu': return itemForm(geb, kt);
+    case 'qr-zeigen': return qrZeigen(item);
     case 'item-edit': return itemForm(geb, kt, geb.items.find(i => i.id === id));
     case 'item-del': return weg(geb.items, i => `„${i.name}“ löschen?`);
     case 'mangel-neu': return mangelForm(item);
@@ -1434,7 +1437,8 @@ function kundeErsetzen(alt, neu) {
   const ort = (it, g) => (it.standort || g.name || '').trim().toLowerCase();
   const name = it => it.name.trim().toLowerCase();
   const altListe = alt.gebaeude.flatMap(g => g.items.map(it => ({ it, ort: ort(it, g), frei: true })));
-  const hatDaten = it => (it.maengel || []).length || (it.dokumente || []).length || (it.protokolle || []).length;
+  // Ein Gerät mit aufgeklebtem QR-Code zählt auch als „mit Daten“, damit sein Code nicht verloren geht
+  const hatDaten = it => (it.maengel || []).length || (it.dokumente || []).length || (it.protokolle || []).length || it.qr;
   const b = { uebernommen: 0, geparkt: 0, weg: 0 };
   const neuListe = neu.gebaeude.flatMap(g => g.items.map(it => ({ it, ort: ort(it, g), treffer: null })));
   // Durchgang 1: gleiches Gerät am gleichen Ort
@@ -1452,6 +1456,7 @@ function kundeErsetzen(alt, neu) {
     if (!treffer) continue;
     const a = treffer.it;
     let geaendert = false;
+    if (a.qr) it.qr = a.qr;
     if (hatDaten(a)) { it.maengel = a.maengel || []; it.dokumente = a.dokumente || []; it.protokolle = a.protokolle || []; geaendert = true; }
     if (a.letztePruefung && a.letztePruefung > (it.letztePruefung || '')) { it.letztePruefung = a.letztePruefung; it.intervall = a.intervall; geaendert = true; }
     if (a.bemerkung && !it.bemerkung.includes(a.bemerkung)) it.bemerkung = [it.bemerkung, a.bemerkung].filter(Boolean).join(' · ');
@@ -1463,6 +1468,112 @@ function kundeErsetzen(alt, neu) {
   if (behalten.length) neu.gebaeude.push({ id: uid(), name: PARKPLATZ, items: behalten });
   return b;
 }
+/* ---------- QR-Codes an den Geräten ----------
+ * Jedes Gerät bekommt bei Bedarf einen festen Zufallscode (it.qr). Im QR-Code steht nur der Link …/#/qr/<code> –
+ * keine Kundendaten. Gescannt wird mit der Kamera direkt in der App. Die Bibliotheken liegen im App-Ordner (lib/)
+ * und werden erst bei Bedarf geladen: qrcode-generator (MIT, Kazuhiko Arase) und jsQR (Apache-2.0, Cosmo Wolfe).
+ */
+const QR_FIRMA = 'Hopster & Lambers';
+const APP_URL = 'https://ramone2004-design.github.io/dguv-v3-app/';
+const skriptLaden = (() => {
+  const geladen = {};
+  return src => geladen[src] ||= new Promise((ok, fehler) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = ok;
+    s.onerror = () => { delete geladen[src]; s.remove(); fehler(meldung('Die QR-Funktion konnte nicht geladen werden. Bitte einmal mit Internet öffnen.')); };
+    document.head.append(s);
+  });
+})();
+function alleGeraete() { return db.kunden.flatMap(k => k.gebaeude.flatMap(g => g.items.map(it => ({ k, g, it })))); }
+function qrCodeVon(it) {
+  if (it.qr) return it.qr;
+  const zeichen = 'abcdefghjkmnpqrstuvwxyz23456789', vergeben = new Set(alleGeraete().map(x => x.it.qr).filter(Boolean));
+  let code;
+  do { code = [...crypto.getRandomValues(new Uint8Array(10))].map(b => zeichen[b % zeichen.length]).join(''); } while (vergeben.has(code));
+  it.qr = code; speichern();
+  return code;
+}
+const qrLink = code => (location.protocol === 'https:' ? location.origin + location.pathname : APP_URL) + '#/qr/' + code;
+function qrSvg(text) {
+  const qr = qrcode(0, 'Q');   // Fehlerkorrektur Q: lesbar auch bei Verschmutzung oder Kratzern
+  qr.addData(text); qr.make();
+  const n = qr.getModuleCount(), r = 4;
+  let d = '';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (qr.isDark(y, x)) d += `M${x + r} ${y + r}h1v1h-1z`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n + 2 * r} ${n + 2 * r}" shape-rendering="crispEdges" role="img" aria-label="QR-Code">
+    <rect width="100%" height="100%" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
+}
+async function qrZeigen(it) {
+  try { await skriptLaden('lib/qrcode.js'); } catch (e) { return alert(e.nachricht); }
+  const svg = qrSvg(qrLink(qrCodeVon(it)));
+  dlg.innerHTML = `<h2>QR-Code: ${esc(it.name)}</h2>
+    <div class="qrbild">${svg}<div>${esc(QR_FIRMA)}</div></div>
+    <p class="sub">Dieser Code gehört fest zu diesem Gerät und bleibt gleich, auch wenn du es umbenennst. Im Code stehen keine Kundendaten.</p>
+    <div class="dlg-actions"><button data-x>Schließen</button><button class="primary" data-druck>Drucken</button></div>`;
+  dlg.querySelector('[data-x]').onclick = () => dlg.close();
+  dlg.querySelector('[data-druck]').onclick = () => {
+    document.getElementById('druck').innerHTML = `<div class="etikett">${svg}<div>${esc(QR_FIRMA)}</div></div>`;
+    print();
+  };
+  dlg.classList.remove('breit');
+  dlg.showModal();
+}
+function viewQr(code) {
+  const t = alleGeraete().find(x => x.it.qr && x.it.qr === code);
+  if (t) { location.replace(`#/k/${t.k.id}/g/${t.g.id}/${t.it.typ}/${t.it.id}`); return; }
+  app.innerHTML = `<div class="head"><h1>QR-Code nicht gefunden</h1></div>
+    <div class="empty">Zu diesem QR-Code gibt es auf diesem Gerät keinen Eintrag.<br>
+      Vielleicht wurde er auf einem anderen Gerät erstellt und noch nicht über Google Drive abgeglichen – oder das Gerät wurde gelöscht.</div>`;
+}
+async function qrScannen() {
+  if (!entsperrt()) return;
+  if (!navigator.mediaDevices?.getUserMedia) return alert('Die Kamera ist in diesem Browser nicht verfügbar.');
+  dlg.innerHTML = `<h2>QR-Code scannen</h2>
+    <div class="scanfeld"><video playsinline muted></video></div>
+    <p class="sub" id="scanInfo">Kamera wird gestartet …</p>
+    <div class="dlg-actions"><button data-x>Abbrechen</button></div>`;
+  dlg.classList.remove('breit');
+  dlg.showModal();
+  const info = dlg.querySelector('#scanInfo'), video = dlg.querySelector('video');
+  let stream = null, aktiv = true;
+  // Kamera in jedem Fall sofort freigeben: Abbrechen, Esc, Treffer, Fehler oder wenn der Dialog anderweitig schließt
+  const ende = () => { aktiv = false; stream?.getTracks().forEach(t => t.stop()); stream = null; if (video) video.srcObject = null; };
+  dlg.addEventListener('close', ende, { once: true });
+  dlg.oncancel = () => { dlg.oncancel = null; ende(); };
+  dlg.querySelector('[data-x]').onclick = () => { ende(); dlg.close(); };
+  try {
+    await skriptLaden('lib/jsQR.js');
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    if (!aktiv || !dlg.open) return ende();
+    video.srcObject = stream;
+    await video.play();
+    info.textContent = 'Halte die Kamera auf den QR-Code am Gerät.';
+    const c = document.createElement('canvas'), ctx = c.getContext('2d', { willReadFrequently: true });
+    const schritt = () => {
+      if (!aktiv || !dlg.open) return ende();
+      if (video.readyState >= 2 && video.videoWidth) {
+        const f = Math.min(1, 720 / Math.max(video.videoWidth, video.videoHeight));
+        c.width = Math.round(video.videoWidth * f); c.height = Math.round(video.videoHeight * f);
+        ctx.drawImage(video, 0, 0, c.width, c.height);
+        const treffer = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'dontInvert' });
+        if (treffer) {
+          // Nur Codes dieser App annehmen – fremde Links werden nie geöffnet
+          const m = /#\/qr\/([a-z0-9]{6,20})\s*$/.exec(treffer.data);
+          if (m) { ende(); dlg.oncancel = null; dlg.close(); location.hash = '#/qr/' + m[1]; return; }
+          info.textContent = 'Das ist kein QR-Code dieser App.';
+        }
+      }
+      setTimeout(schritt, 120);
+    };
+    schritt();
+  } catch (e) {
+    ende();
+    info.textContent = e.nachricht || (e.name === 'NotAllowedError'
+      ? 'Kein Zugriff auf die Kamera. Bitte den Kamerazugriff für diese App in den Einstellungen erlauben.'
+      : 'Die Kamera konnte nicht gestartet werden.');
+  }
+}
+
 function auswahlDialog(titel, text, optionen) {
   return new Promise(res => {
     dlg.innerHTML = `<h2>${esc(titel)}</h2><p class="sub" style="white-space:pre-line">${esc(text)}</p>
@@ -1686,6 +1797,7 @@ async function anmeldenUndSync() {
 }
 cloudBtn.onclick = () => (cloud.clientId && !angemeldet()) ? anmeldenUndSync() : cloudDialog();
 document.getElementById('lockBtn').onclick = sperren;
+document.getElementById('scanBtn').onclick = qrScannen;
 
 function cloudDialog() {
   const an = angemeldet();

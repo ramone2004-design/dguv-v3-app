@@ -1,7 +1,7 @@
 // Service Worker: macht die App installierbar und offline startbar.
 // Strategie: immer zuerst das Netz fragen (Updates kommen sofort an), bei fehlender Verbindung aus dem Cache.
-const CACHE = 'dguv-v3-app-v10';
-const DATEIEN = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
+const CACHE = 'dguv-v3-app-v11';
+const DATEIEN = ['./', 'index.html', 'app.js', 'lib/qrcode.js', 'lib/jsQR.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(DATEIEN)).then(() => self.skipWaiting()));
